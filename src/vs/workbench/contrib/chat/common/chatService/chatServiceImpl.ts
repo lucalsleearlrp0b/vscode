@@ -1066,10 +1066,25 @@ export class ChatService extends Disposable implements IChatService {
 		if (!options?.isSystemInitiated) {
 			return undefined;
 		}
-		const configured = this.configurationService.getValue<string>(ChatConfiguration.UtilitySmallModel);
-		const trimmed = typeof configured === 'string' ? configured.trim() : '';
-		const vendorAndId = trimmed.length > 0 ? trimmed : 'copilot/gpt-4o-mini';
+		const configKey = ChatConfiguration.UtilitySmallModel;
+		const raw = this.configurationService.getValue<unknown>(configKey);
 		const label = options.systemInitiatedLabel ?? '';
+		let vendorAndId: string;
+		if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim().length === 0)) {
+			vendorAndId = 'copilot/gpt-4o-mini';
+		} else if (typeof raw !== 'string') {
+			this.logService.warn(`[ChatService] Ignoring non-string ${configKey} override of type '${typeof raw}'; falling back to default utility-small model.`);
+			vendorAndId = 'copilot/gpt-4o-mini';
+		} else {
+			const trimmed = raw.trim();
+			const slashIdx = trimmed.indexOf('/');
+			if (slashIdx <= 0 || slashIdx >= trimmed.length - 1) {
+				this.logService.warn(`[ChatService] Ignoring malformed ${configKey} override: '${trimmed}' (expected '\${vendor}/\${id}'); falling back to caller's model (label: '${label}').`);
+				return undefined;
+			}
+			vendorAndId = trimmed;
+		}
+
 		const matches: string[] = [];
 		for (const identifier of this.languageModelsService.getLanguageModelIds()) {
 			const metadata = this.languageModelsService.lookupLanguageModel(identifier);
@@ -1082,10 +1097,10 @@ export class ChatService extends Disposable implements IChatService {
 			return matches[0];
 		}
 		if (matches.length > 1) {
-			this.logService.trace(`[ChatService] system-initiated request found ${matches.length} ambiguous matches for utility-small model '${vendorAndId}'; falling back to caller's model (label: '${label}')`);
+			this.logService.warn(`[ChatService] ${configKey} override '${vendorAndId}' matched ${matches.length} models; ignoring (override is ambiguous); falling back to caller's model (label: '${label}').`);
 			return undefined;
 		}
-		this.logService.trace(`[ChatService] system-initiated request could not resolve utility-small model '${vendorAndId}'; falling back to caller's model (label: '${label}')`);
+		this.logService.warn(`[ChatService] No model matched ${configKey} value '${vendorAndId}'; falling back to caller's model (label: '${label}').`);
 		return undefined;
 	}
 
