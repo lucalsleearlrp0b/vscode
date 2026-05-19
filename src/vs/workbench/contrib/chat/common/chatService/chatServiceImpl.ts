@@ -48,7 +48,7 @@ import { IChatTransferService } from '../model/chatTransferService.js';
 import { chatSessionResourceToId, getChatSessionType, isUntitledChatSession, LocalChatSessionUri } from '../model/chatUri.js';
 import { ChatRequestVariableSet, IChatRequestVariableEntry, isPromptTextVariableEntry } from '../attachments/chatVariableEntries.js';
 import { IDynamicVariable } from '../attachments/chatVariables.js';
-import { ChatAgentLocation, ChatModeKind } from '../constants.js';
+import { ChatAgentLocation, ChatConfiguration, ChatModeKind } from '../constants.js';
 import { ChatMessageRole, IChatMessage, ILanguageModelsService } from '../languageModels.js';
 import { ILanguageModelToolsService, IToolAndToolSetEnablementMap } from '../tools/languageModelToolsService.js';
 import { ChatSessionOperationLog } from '../model/chatSessionOperationLog.js';
@@ -1053,6 +1053,30 @@ export class ChatService extends Disposable implements IChatService {
 		return newTokenSource.token;
 	}
 
+	/**
+	 * For system-initiated requests (e.g. terminal-tool steering messages),
+	 * route to the configured utility-small model so the user is not billed
+	 * for tokens they did not initiate. Falls back to `copilot/gpt-4o-mini`
+	 * when the setting is empty. Returns `undefined` to leave the caller's
+	 * model selection untouched.
+	 */
+	private _resolveSystemInitiatedModelId(options: IChatSendRequestOptions | undefined): string | undefined {
+		if (!options?.isSystemInitiated) {
+			return undefined;
+		}
+		const configured = this.configurationService.getValue<string>(ChatConfiguration.UtilitySmallModel);
+		const vendorAndId = (typeof configured === 'string' && configured.length > 0) ? configured : 'copilot/gpt-4o-mini';
+		for (const identifier of this.languageModelsService.getLanguageModelIds()) {
+			const metadata = this.languageModelsService.lookupLanguageModel(identifier);
+			if (metadata && `${metadata.vendor}/${metadata.id}` === vendorAndId) {
+				this.logService.trace(`[ChatService] system-initiated request routed to utility-small model '${vendorAndId}' (identifier: '${identifier}', label: '${options.systemInitiatedLabel ?? ''}')`);
+				return identifier;
+			}
+		}
+		this.logService.trace(`[ChatService] system-initiated request could not resolve utility-small model '${vendorAndId}'; falling back to caller's model (label: '${options.systemInitiatedLabel ?? ''}')`);
+		return undefined;
+	}
+
 	private _sendRequestAsync(model: ChatModel, sessionResource: URI, parsedRequest: IParsedChatRequest, attempt: number, enableCommandDetection: boolean, defaultAgent: IChatAgentData, location: ChatAgentLocation, options?: IChatSendRequestOptions): IChatSendRequestResponseState {
 		const followupsCancelToken = this.refreshFollowupsCancellationToken(sessionResource);
 		let request: ChatRequestModel | undefined;
@@ -1234,7 +1258,8 @@ export class ChatService extends Disposable implements IChatService {
 					const initialAgent = agentPart?.agent ?? defaultAgent;
 					const initialCommand = agentSlashCommandPart?.command;
 					const initVariableData: IChatRequestVariableData = { variables: [] };
-					request = model.addRequest(parsedRequest, initVariableData, attempt, options?.modeInfo, initialAgent, initialCommand, options?.confirmation, options?.locationData, options?.attachedContext, undefined, options?.userSelectedModelId, options?.userSelectedTools?.get(), undefined, options?.isSystemInitiated, options?.systemInitiatedLabel, options?.terminalExecutionId);
+					const effectiveUserSelectedModelId = this._resolveSystemInitiatedModelId(options) ?? options?.userSelectedModelId;
+					request = model.addRequest(parsedRequest, initVariableData, attempt, options?.modeInfo, initialAgent, initialCommand, options?.confirmation, options?.locationData, options?.attachedContext, undefined, effectiveUserSelectedModelId, options?.userSelectedTools?.get(), undefined, options?.isSystemInitiated, options?.systemInitiatedLabel, options?.terminalExecutionId);
 					const thisRequest = request;
 					completeResponseCreated();
 
